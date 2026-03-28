@@ -1,10 +1,12 @@
 {
   "name": "@unconfirmed/kei",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "bin": {
     "kei": "dist/cli.js"
   },
