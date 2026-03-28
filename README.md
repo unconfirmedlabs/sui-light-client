@@ -1,4 +1,4 @@
-# Sui Light Client
+# Kei
 
 Pure TypeScript Sui light client — verify checkpoint signatures, committee transitions, and transaction inclusion using BLS12-381.
 
