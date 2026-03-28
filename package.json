@@ -1,6 +1,6 @@
 {
   "name": "@unconfirmed/kei",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -10,12 +10,11 @@
   "scripts": {
     "prepublishOnly": "bun run build",
     "build": "bun build src/index.ts --outdir dist --target node --external '@noble/*' --external '@mysten/*' && bunx tsc --emitDeclarationOnly --outDir dist",
-    "test": "bun test",
-    "verify": "bun src/cli.ts verify"
+    "test": "bun test"
   },
   "dependencies": {
     "@mysten/bcs": "^1.3.0",
-    "@noble/curves": "^1.8.0",
+    "@noble/curves": "^1.9.0",
     "@noble/hashes": "^1.7.0"
   },
   "devDependencies": {
