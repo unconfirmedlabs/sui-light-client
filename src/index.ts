@@ -1,4 +1,4 @@
-export { verifyCheckpoint, verifyCheckpointContents, verifyTransactionInCheckpoint } from './verify.js';
+export { verifyCheckpoint, verifyCheckpointContents, verifyTransactionInCheckpoint, PreparedCommittee } from './verify.js';
 export { verifyCommitteeTransition, walkCommitteeChain } from './committee.js';
 export { suiDigest, checkpointDigest, checkpointContentsDigest, transactionDigest, transactionEffectsDigest } from './digest.js';
 export { decodeRoaringBitmap } from './bitmap.js';

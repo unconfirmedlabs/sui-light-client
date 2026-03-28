@@ -2,7 +2,7 @@ import { test, expect, describe } from 'bun:test';
 import { decodeRoaringBitmap } from '../src/bitmap';
 import { suiDigest } from '../src/digest';
 import { bcsCheckpointSummary } from '../src/bcs';
-import { verifyCheckpoint } from '../src/verify';
+import { verifyCheckpoint, PreparedCommittee } from '../src/verify';
 import type { Committee, CheckpointSummary, AuthorityQuorumSignInfo } from '../src/types';
 
 describe('RoaringBitmap', () => {
@@ -128,8 +128,18 @@ describe('Checkpoint verification (testnet)', () => {
 			signersMap: sig.bitmap!,
 		};
 
-		// Verify the checkpoint signature
+		// Verify with raw committee (cold path, ~150ms)
+		let t = performance.now();
 		verifyCheckpoint(checkpointSummary, authSignature, committee);
-		console.log('✓ Checkpoint signature verified!');
+		console.log(`✓ Cold verify: ${(performance.now() - t).toFixed(1)}ms`);
+
+		// Verify with PreparedCommittee (warm path, ~10ms)
+		t = performance.now();
+		const prepared = new PreparedCommittee(committee);
+		console.log(`  PreparedCommittee init: ${(performance.now() - t).toFixed(1)}ms (one-time per epoch)`);
+
+		t = performance.now();
+		verifyCheckpoint(checkpointSummary, authSignature, prepared);
+		console.log(`✓ Prepared verify: ${(performance.now() - t).toFixed(1)}ms`);
 	}, 30_000);
 });
