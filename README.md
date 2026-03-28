@@ -41,14 +41,18 @@ No WASM needed. The bottleneck was G2 point deserialization, not the BLS pairing
 Try it out against live checkpoints:
 
 ```sh
+# Set your fullnode endpoint
+export GRPC_URL=https://fullnode.testnet.sui.io
+export NETWORK=testnet
+
 # Verify a single checkpoint
 bun src/cli.ts verify 318460000
 
 # Verify a range (uses PreparedCommittee for bulk speed)
 bun src/cli.ts verify-range 318460000 318460009
 
-# Against mainnet
-bun src/cli.ts verify 318460000 --url https://fullnode.mainnet.sui.io
+# Or pass as flags
+bun src/cli.ts verify 318460000 --network testnet --url https://fullnode.testnet.sui.io
 ```
 
 ```

@@ -4,27 +4,35 @@
  *
  * Usage:
  *   bun src/cli.ts verify <checkpoint_seq> [--url <fullnode_url>]
- *   bun src/cli.ts verify 318460000
- *   bun src/cli.ts verify 318460000 --url https://fullnode.mainnet.sui.io
+ *   bun src/cli.ts verify-range <from> <to> [--url <fullnode_url>]
  */
 
 import { bcsCheckpointSummary } from './bcs.js';
 import { decodeRoaringBitmap } from './bitmap.js';
 import { verifyCheckpoint, PreparedCommittee } from './verify.js';
-import type { Committee, CheckpointSummary, AuthorityQuorumSignInfo } from './types.js';
+import { parseBcsSummary } from './parse.js';
+import type { Committee, AuthorityQuorumSignInfo } from './types.js';
 
-const DEFAULT_URL = 'https://fullnode.testnet.sui.io';
+type Network = 'testnet' | 'mainnet';
 
 function usage(): never {
 	console.log(`Usage:
-  sui-light-client verify <checkpoint_seq> [--url <fullnode_url>]
-  sui-light-client verify-range <from> <to> [--url <fullnode_url>]
+  sui-light-client verify <checkpoint_seq> --network <testnet|mainnet> --url <grpc_url>
+  sui-light-client verify-range <from> <to> --network <testnet|mainnet> --url <grpc_url>
+
+Environment variables (override flags):
+  GRPC_URL    — fullnode gRPC endpoint
+  NETWORK     — testnet or mainnet
 
 Examples:
-  bun src/cli.ts verify 318460000
-  bun src/cli.ts verify 318460000 --url https://fullnode.mainnet.sui.io
-  bun src/cli.ts verify-range 318460000 318460010`);
+  bun src/cli.ts verify 318460000 --network testnet --url https://fullnode.testnet.sui.io
+  GRPC_URL=https://fullnode.testnet.sui.io NETWORK=testnet bun src/cli.ts verify 318460000`);
 	process.exit(1);
+}
+
+function getFlag(args: string[], flag: string): string | undefined {
+	const idx = args.indexOf(flag);
+	return idx !== -1 ? args[idx + 1] : undefined;
 }
 
 function parseArgs() {
@@ -32,43 +40,50 @@ function parseArgs() {
 	if (args.length === 0) usage();
 
 	const command = args[0];
-	let url = DEFAULT_URL;
-	const urlIdx = args.indexOf('--url');
-	if (urlIdx !== -1 && args[urlIdx + 1]) {
-		url = args[urlIdx + 1];
+	const network = (process.env.NETWORK || getFlag(args, '--network')) as Network | undefined;
+	const url = process.env.GRPC_URL || getFlag(args, '--url');
+
+	if (!network || !url) {
+		console.error('Error: --network and --url are required (or set NETWORK and GRPC_URL env vars)\n');
+		usage();
 	}
 
 	if (command === 'verify') {
 		const seq = args[1];
 		if (!seq || isNaN(Number(seq))) usage();
-		return { command: 'verify' as const, seq: Number(seq), url };
+		return { command: 'verify' as const, seq: Number(seq), network, url };
 	}
 
 	if (command === 'verify-range') {
 		const from = args[1];
 		const to = args[2];
 		if (!from || !to || isNaN(Number(from)) || isNaN(Number(to))) usage();
-		return { command: 'verify-range' as const, from: Number(from), to: Number(to), url };
+		return { command: 'verify-range' as const, from: Number(from), to: Number(to), network, url };
 	}
 
 	usage();
 }
 
-let _grpcClient: any = null;
-async function getGrpcClient(url: string) {
+interface GrpcCheckpoint {
+	summary: { bcs: { value: Uint8Array } };
+	signature: { epoch: bigint; signature: Uint8Array; bitmap: Uint8Array };
+}
+
+let _grpcClient: InstanceType<typeof import('@mysten/sui/grpc').SuiGrpcClient> | null = null;
+async function getGrpcClient(network: Network, url: string) {
 	if (_grpcClient) return _grpcClient;
 	const { SuiGrpcClient } = await import('@mysten/sui/grpc');
-	_grpcClient = new SuiGrpcClient({ baseUrl: url } as any);
+	_grpcClient = new SuiGrpcClient({ network, baseUrl: url });
 	return _grpcClient;
 }
 
-async function fetchCheckpoint(url: string, seq: number) {
-	const client = await getGrpcClient(url);
+async function fetchCheckpoint(network: Network, url: string, seq: number): Promise<GrpcCheckpoint> {
+	const client = await getGrpcClient(network, url);
 	const { response } = await client.ledgerService.getCheckpoint({
-		checkpointId: { oneofKind: 'sequenceNumber', sequenceNumber: String(seq) },
+		checkpointId: { oneofKind: 'sequenceNumber', sequenceNumber: BigInt(seq) },
 		readMask: { paths: ['summary.bcs', 'signature'] },
 	});
-	return response.checkpoint!;
+	return response.checkpoint as unknown as GrpcCheckpoint;
 }
 
 async function fetchCommittee(url: string, epoch: string): Promise<Committee> {
@@ -81,56 +96,33 @@ async function fetchCommittee(url: string, epoch: string): Promise<Committee> {
 			params: [epoch],
 		}),
 	});
-	const json = (await resp.json()) as any;
-	const validators = json.result.validators as [string, string][];
+	const json = (await resp.json()) as { result: { validators: [string, string][] } };
 	return {
 		epoch: BigInt(epoch),
-		members: validators.map(([pk, stake]) => ({
+		members: json.result.validators.map(([pk, stake]) => ({
 			publicKey: new Uint8Array(Buffer.from(pk, 'base64')),
 			votingPower: BigInt(stake),
 		})),
 	};
 }
 
-function parseCheckpointData(cp: any): { summary: CheckpointSummary; authSignature: AuthorityQuorumSignInfo } {
-	const parsed: any = bcsCheckpointSummary.parse(cp.summary!.bcs!.value!);
-	const sig = cp.signature!;
-
-	const summary: CheckpointSummary = {
-		epoch: BigInt(parsed.epoch),
-		sequenceNumber: BigInt(parsed.sequenceNumber),
-		networkTotalTransactions: BigInt(parsed.networkTotalTransactions),
-		contentDigest: Uint8Array.from(parsed.contentDigest),
-		previousDigest: parsed.previousDigest ? Uint8Array.from(parsed.previousDigest) : null,
-		epochRollingGasCostSummary: {
-			computationCost: BigInt(parsed.epochRollingGasCostSummary.computationCost),
-			storageCost: BigInt(parsed.epochRollingGasCostSummary.storageCost),
-			storageRebate: BigInt(parsed.epochRollingGasCostSummary.storageRebate),
-			nonRefundableStorageFee: BigInt(parsed.epochRollingGasCostSummary.nonRefundableStorageFee),
-		},
-		timestampMs: BigInt(parsed.timestampMs),
-		checkpointCommitments: parsed.checkpointCommitments,
-		endOfEpochData: parsed.endOfEpochData,
-		versionSpecificData: Uint8Array.from(parsed.versionSpecificData),
-	};
-
+function parseCheckpointData(cp: GrpcCheckpoint) {
+	const summary = parseBcsSummary(cp.summary.bcs.value);
 	const authSignature: AuthorityQuorumSignInfo = {
-		epoch: BigInt(sig.epoch!),
-		signature: sig.signature!,
-		signersMap: sig.bitmap!,
+		epoch: cp.signature.epoch,
+		signature: cp.signature.signature,
+		signersMap: cp.signature.bitmap,
 	};
-
 	return { summary, authSignature };
 }
 
-async function verifySingle(seq: number, url: string) {
+async function verifySingle(seq: number, network: Network, url: string) {
 	const total = performance.now();
 
 	process.stdout.write(`Fetching checkpoint ${seq}...`);
 	let t = performance.now();
-	const cp = await fetchCheckpoint(url, seq);
-	const fetchMs = performance.now() - t;
-	console.log(` ${fetchMs.toFixed(0)}ms`);
+	const cp = await fetchCheckpoint(network, url, seq);
+	console.log(` ${(performance.now() - t).toFixed(0)}ms`);
 
 	const { summary, authSignature } = parseCheckpointData(cp);
 	const signers = decodeRoaringBitmap(authSignature.signersMap);
@@ -138,44 +130,39 @@ async function verifySingle(seq: number, url: string) {
 	process.stdout.write(`Fetching committee for epoch ${summary.epoch}...`);
 	t = performance.now();
 	const committee = await fetchCommittee(url, summary.epoch.toString());
-	const committeeMs = performance.now() - t;
-	console.log(` ${committeeMs.toFixed(0)}ms (${committee.members.length} validators)`);
+	console.log(` ${(performance.now() - t).toFixed(0)}ms (${committee.members.length} validators)`);
 
 	process.stdout.write(`Verifying signature (${signers.length} signers)...`);
 	t = performance.now();
 	verifyCheckpoint(summary, authSignature, committee);
-	const verifyMs = performance.now() - t;
-	console.log(` ${verifyMs.toFixed(0)}ms`);
+	console.log(` ${(performance.now() - t).toFixed(0)}ms`);
 
 	console.log(`\nCheckpoint ${seq} verified in ${(performance.now() - total).toFixed(0)}ms`);
 }
 
-async function verifyRange(from: number, to: number, url: string) {
+async function verifyRange(from: number, to: number, network: Network, url: string) {
 	const count = to - from + 1;
 	console.log(`Verifying ${count} checkpoints (${from} → ${to})\n`);
 
-	// Fetch first checkpoint to get epoch
 	process.stdout.write('Fetching first checkpoint...');
 	let t = performance.now();
-	const firstCp = await fetchCheckpoint(url, from);
+	const firstCp = await fetchCheckpoint(network, url, from);
 	const { summary: firstSummary } = parseCheckpointData(firstCp);
 	console.log(` epoch ${firstSummary.epoch} (${(performance.now() - t).toFixed(0)}ms)`);
 
-	// Fetch and prepare committee (one-time)
 	process.stdout.write('Preparing committee...');
 	t = performance.now();
 	const committee = await fetchCommittee(url, firstSummary.epoch.toString());
 	const prepared = new PreparedCommittee(committee);
 	console.log(` ${committee.members.length} validators, ${(performance.now() - t).toFixed(0)}ms\n`);
 
-	// Verify range
 	let verified = 0;
 	let totalVerifyMs = 0;
 	const batchStart = performance.now();
 
 	for (let seq = from; seq <= to; seq++) {
 		t = performance.now();
-		const cp = await fetchCheckpoint(url, seq);
+		const cp = await fetchCheckpoint(network, url, seq);
 		const fetchMs = performance.now() - t;
 
 		const { summary, authSignature } = parseCheckpointData(cp);
@@ -198,11 +185,10 @@ async function verifyRange(from: number, to: number, url: string) {
 
 async function main() {
 	const parsed = parseArgs();
-
 	if (parsed.command === 'verify') {
-		await verifySingle(parsed.seq, parsed.url);
+		await verifySingle(parsed.seq, parsed.network, parsed.url);
 	} else {
-		await verifyRange(parsed.from, parsed.to, parsed.url);
+		await verifyRange(parsed.from, parsed.to, parsed.network, parsed.url);
 	}
 }
 
