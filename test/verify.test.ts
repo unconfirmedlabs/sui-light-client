@@ -6,8 +6,7 @@ import { verifyCheckpoint, PreparedCommittee } from '../src/verify';
 import type { Committee, CheckpointSummary, AuthorityQuorumSignInfo } from '../src/types';
 
 describe('RoaringBitmap', () => {
-	test('decodes a simple array container bitmap', () => {
-		// Cookie 12346 format: [cookie: u32] [count: u32] [key: u16, card-1: u16] [offset: u32] [data...]
+	test('decodes array container (cookie 12346)', () => {
 		const data = new Uint8Array([
 			0x3a, 0x30, 0x00, 0x00, // cookie = 12346 (u32 LE)
 			0x01, 0x00, 0x00, 0x00, // containerCount = 1 (u32 LE)
@@ -17,6 +16,38 @@ describe('RoaringBitmap', () => {
 			0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, // values
 		]);
 		expect(decodeRoaringBitmap(data)).toEqual([0, 1, 2, 3]);
+	});
+
+	test('decodes run container (cookie 12347)', () => {
+		// Cookie 12347 format: [cookie: u16] [count-1: u16] [run bitmap] [headers] [data]
+		// 1 container, marked as run in the run bitmap
+		const data = new Uint8Array([
+			0x3b, 0x30,             // cookie = 12347 (u16 LE)
+			0x00, 0x00,             // containerCount - 1 = 0 (1 container)
+			0x01,                   // run bitmap: container 0 is a run (bit 0 set)
+			0x00, 0x00,             // key = 0
+			0x09, 0x00,             // cardinality - 1 = 9 (10 items, but ignored for run containers)
+			// Run container data: numRuns=1, then [start=0, length=9] (values 0..9)
+			0x01, 0x00,             // numRuns = 1
+			0x00, 0x00,             // start = 0
+			0x09, 0x00,             // length = 9 (inclusive, so 0..9 = 10 values)
+		]);
+		expect(decodeRoaringBitmap(data)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+	});
+
+	test('decodes run container with multiple runs', () => {
+		const data = new Uint8Array([
+			0x3b, 0x30,             // cookie = 12347
+			0x00, 0x00,             // 1 container
+			0x01,                   // run bitmap: container 0 is run
+			0x00, 0x00,             // key = 0
+			0x04, 0x00,             // cardinality - 1 = 4
+			// 2 runs: [0..2] and [10..11]
+			0x02, 0x00,             // numRuns = 2
+			0x00, 0x00, 0x02, 0x00, // run 1: start=0, length=2 → 0,1,2
+			0x0a, 0x00, 0x01, 0x00, // run 2: start=10, length=1 → 10,11
+		]);
+		expect(decodeRoaringBitmap(data)).toEqual([0, 1, 2, 10, 11]);
 	});
 });
 
