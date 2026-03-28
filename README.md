@@ -1,16 +1,16 @@
-# Kei
+# Kei (軽)
 
-Pure TypeScript Sui light client — verify checkpoint signatures, committee transitions, and transaction inclusion using BLS12-381.
+Lightweight Sui light client in pure TypeScript. Verify checkpoint signatures, committee transitions, and transaction inclusion using BLS12-381.
 
 ## Why
 
-Sui fullnodes return data, but how do you know it's correct? The light client verifies responses cryptographically by checking that checkpoint summaries are signed by a quorum of validators, then proving that transactions and objects are included in those certified checkpoints.
+Sui fullnodes return data, but how do you know it's correct? Kei verifies responses cryptographically by checking that checkpoint summaries are signed by a quorum of validators, then proving that transactions and objects are included in those certified checkpoints.
 
-This is the first TypeScript implementation of Sui's light client verification. No native dependencies — works in browsers, Cloudflare Workers, Bun, and Node.js.
+No native dependencies — works in browsers, Cloudflare Workers, Bun, and Node.js.
 
 ## How it works
 
-Sui validators sign checkpoint summaries using BLS12-381 aggregate signatures. A checkpoint is valid if validators holding ≥66.67% of voting power (6667/10000) have signed it. The light client:
+Sui validators sign checkpoint summaries using BLS12-381 aggregate signatures. A checkpoint is valid if validators holding ≥66.67% of voting power (6667/10000) have signed it. Kei:
 
 1. **Decodes the signers bitmap** (RoaringBitmap) to identify which validators signed
 2. **Aggregates their BLS public keys** (G2 points in min-sig mode)
@@ -80,8 +80,7 @@ Throughput: 7.5 checkpoints/sec (including network)
 import {
   verifyCheckpoint,
   PreparedCommittee,
-  bcsCheckpointSummary,
-} from '@unconfirmed/sui-light-client';
+} from '@unconfirmed/kei';
 
 // Build committee from validator data (once per epoch)
 const committee = {
@@ -95,11 +94,9 @@ const committee = {
 // Pre-parse for fast bulk verification
 const prepared = new PreparedCommittee(committee);
 
-// Parse checkpoint summary from BCS bytes (e.g., from gRPC summary.bcs.value)
-const summary = bcsCheckpointSummary.parse(summaryBcsBytes);
-
-// Verify the checkpoint signature
-verifyCheckpoint(summary, authSignature, prepared);
+// Verify using the raw BCS bytes from the gRPC response
+// (the exact bytes validators signed — no re-serialization)
+verifyCheckpoint(summaryBcsBytes, authSignature, prepared);
 // Throws on invalid signature or insufficient quorum
 ```
 
@@ -107,9 +104,9 @@ verifyCheckpoint(summary, authSignature, prepared);
 
 ```typescript
 import { SuiGrpcClient } from '@mysten/sui/grpc';
-import { verifyCheckpoint, PreparedCommittee, bcsCheckpointSummary } from '@unconfirmed/sui-light-client';
+import { verifyCheckpoint, PreparedCommittee } from '@unconfirmed/kei';
 
-const client = new SuiGrpcClient({ baseUrl: 'https://fullnode.testnet.sui.io' });
+const client = new SuiGrpcClient({ network: 'testnet', baseUrl: 'https://fullnode.testnet.sui.io' });
 
 // Fetch checkpoint with BCS summary + validator signature
 const { response } = await client.ledgerService.getCheckpoint({
@@ -118,26 +115,28 @@ const { response } = await client.ledgerService.getCheckpoint({
 });
 
 const cp = response.checkpoint!;
-const parsed = bcsCheckpointSummary.parse(cp.summary!.bcs!.value!);
 
 // Build auth signature from gRPC response
 const authSignature = {
-  epoch: BigInt(cp.signature!.epoch!),
+  epoch: cp.signature!.epoch!,
   signature: cp.signature!.signature!,   // 48-byte BLS aggregate sig
   signersMap: cp.signature!.bitmap!,      // RoaringBitmap of signer indices
 };
 
-// Verify
-verifyCheckpoint(parsed, authSignature, prepared);
+// Verify using raw BCS bytes
+verifyCheckpoint(cp.summary!.bcs!.value!, authSignature, prepared);
 ```
 
 ### Committee transitions
 
 ```typescript
-import { verifyCommitteeTransition, walkCommitteeChain } from '@unconfirmed/sui-light-client';
+import { verifyCommitteeTransition, walkCommitteeChain, parseBcsSummary } from '@unconfirmed/kei';
+
+// Parse the summary to read endOfEpochData
+const summary = parseBcsSummary(summaryBcsBytes);
 
 // Verify a single epoch transition from an end-of-epoch checkpoint
-const nextCommittee = verifyCommitteeTransition(summary, authSignature, currentCommittee);
+const nextCommittee = verifyCommitteeTransition(summaryBcsBytes, summary, authSignature, currentCommittee);
 
 // Walk a chain of end-of-epoch checkpoints to advance multiple epochs
 const latestCommittee = walkCommitteeChain(endOfEpochCheckpoints, trustedCommittee);
@@ -158,7 +157,7 @@ const latestCommittee = walkCommitteeChain(endOfEpochCheckpoints, trustedCommitt
 ```
 [0x02, 0x00, 0x00]              Intent: scope=CheckpointSummary, version=V0, app=Sui
 || BCS(CheckpointSummary)       The checkpoint data
-|| BCS(epoch: u64)              Appended epoch
+|| epoch (u64 LE)               Appended epoch
 ```
 
 ### Digest computation
@@ -167,13 +166,17 @@ All Sui digests follow: `Blake2b-256("StructName::" || BCS(struct))`
 
 ## API
 
-### `verifyCheckpoint(summary, authSignature, committee)`
+### `verifyCheckpoint(summaryBcs, authSignature, committee)`
 
-Verify a checkpoint certificate. Throws on failure.
+Verify a checkpoint certificate using raw BCS bytes. Throws on failure.
 
 ### `PreparedCommittee`
 
 Pre-parses G2 public keys for fast bulk verification. Create once per epoch.
+
+### `parseBcsSummary(bcsBytes)`
+
+Parse raw BCS bytes into a typed `CheckpointSummary`.
 
 ### `verifyCheckpointContents(summary, contents)`
 
@@ -183,7 +186,7 @@ Verify that checkpoint contents match the content digest in the summary.
 
 Prove a transaction exists in checkpoint contents. Returns the execution digests.
 
-### `verifyCommitteeTransition(summary, authSignature, committee)`
+### `verifyCommitteeTransition(summaryBcs, summary, authSignature, committee)`
 
 Verify an epoch transition and extract the next committee.
 
@@ -197,7 +200,7 @@ Walk multiple epoch transitions from a trusted starting committee.
 
 ### Utilities
 
-`suiDigest(structName, bcsBytes)`, `decodeRoaringBitmap(data)`, and specific digest helpers (`checkpointDigest`, `transactionDigest`, etc.).
+`suiDigest(structName, bcsBytes)`, `decodeRoaringBitmap(data)`, `digestsEqual(a, b)`, and specific digest helpers (`checkpointDigest`, `transactionDigest`, etc.).
 
 ## Dependencies
 

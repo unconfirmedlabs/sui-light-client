@@ -1,12 +1,12 @@
 {
-  "name": "@unconfirmed/sui-light-client",
+  "name": "@unconfirmed/kei",
   "version": "0.0.1",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": ["dist"],
   "bin": {
-    "sui-light-client": "src/cli.ts"
+    "kei": "src/cli.ts"
   },
   "scripts": {
     "build": "bun build src/index.ts --outdir dist --target node",
