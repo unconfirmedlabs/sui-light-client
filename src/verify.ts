@@ -7,7 +7,7 @@
 
 import { bls12_381 } from '@noble/curves/bls12-381';
 import { decodeRoaringBitmap } from './bitmap.js';
-import { checkpointContentsDigest } from './digest.js';
+import { checkpointContentsDigest, transactionEffectsDigest, transactionEventsDigest } from './digest.js';
 import {
 	CHECKPOINT_SUMMARY_INTENT,
 	QUORUM_THRESHOLD,
@@ -15,9 +15,10 @@ import {
 	type CheckpointContents,
 	type CheckpointSummary,
 	type Committee,
+	type Digest,
 	type ExecutionDigests,
 } from './types.js';
-import { bcsCheckpointContents } from './bcs.js';
+import { bcsCheckpointContents, bcsTransactionEffects } from './bcs.js';
 
 type G2Point = ReturnType<typeof bls12_381.G2.ProjectivePoint.fromHex>;
 
@@ -144,6 +145,90 @@ export function verifyTransactionInCheckpoint(
 		}
 	}
 	throw new Error('Transaction not found in checkpoint contents');
+}
+
+/**
+ * Verify transaction effects against an expected digest from checkpoint contents.
+ *
+ * Verifies the raw BCS bytes hash to the expected effects digest, then parses
+ * the effects to extract the events digest for further verification.
+ *
+ * @returns The events digest if the transaction emitted events, null otherwise.
+ */
+export function verifyTransactionEffects(
+	effectsBcs: Uint8Array,
+	expectedDigest: Digest,
+): Digest | null {
+	const computed = transactionEffectsDigest(effectsBcs);
+	if (!digestsEqual(computed, expectedDigest)) {
+		throw new Error('Transaction effects digest mismatch');
+	}
+
+	const parsed = bcsTransactionEffects.parse(effectsBcs);
+	const eventsDigest = 'V1' in parsed ? parsed.V1.eventsDigest : parsed.V2.eventsDigest;
+	return eventsDigest ? Uint8Array.from(eventsDigest) : null;
+}
+
+/**
+ * Verify transaction events against an expected digest from transaction effects.
+ */
+export function verifyTransactionEvents(
+	eventsBcs: Uint8Array,
+	expectedDigest: Digest,
+): void {
+	const computed = transactionEventsDigest(eventsBcs);
+	if (!digestsEqual(computed, expectedDigest)) {
+		throw new Error('Transaction events digest mismatch');
+	}
+}
+
+/**
+ * Verify that an object was modified in the given transaction effects.
+ *
+ * Searches the effects' changed objects for the given object ID and returns
+ * the object's output digest. Returns null if the object was deleted or wrapped.
+ * Throws if the object ID is not found in the effects at all.
+ *
+ * Effects should have been verified via verifyTransactionEffects() first to
+ * ensure the effects data is authentic.
+ */
+export function verifyObjectInEffects(
+	objectId: Uint8Array,
+	effectsBcs: Uint8Array,
+): Digest | null {
+	const parsed = bcsTransactionEffects.parse(effectsBcs);
+
+	if ('V2' in parsed) {
+		for (const [addr, change] of parsed.V2.changedObjects) {
+			if (!digestsEqual(addr, objectId)) continue;
+
+			const out = change.outputState;
+			if ('ObjectWrite' in out) return Uint8Array.from(out.ObjectWrite[0]);
+			if ('PackageWrite' in out) return Uint8Array.from(out.PackageWrite[1]);
+			// NotExist or AccumulatorWriteV1 — object deleted or accumulator
+			return null;
+		}
+	} else if ('V1' in parsed) {
+		const v1 = parsed.V1;
+		// created, mutated, unwrapped have (ObjectRef, Owner) tuples
+		for (const list of [v1.created, v1.mutated, v1.unwrapped]) {
+			for (const [ref] of list) {
+				if (digestsEqual(ref.objectId, objectId)) {
+					return Uint8Array.from(ref.digest);
+				}
+			}
+		}
+		// deleted, unwrappedThenDeleted, wrapped have ObjectRef only
+		for (const list of [v1.deleted, v1.unwrappedThenDeleted, v1.wrapped]) {
+			for (const ref of list) {
+				if (digestsEqual(ref.objectId, objectId)) {
+					return null; // deleted or wrapped
+				}
+			}
+		}
+	}
+
+	throw new Error('Object not found in transaction effects');
 }
 
 export function digestsEqual(a: Uint8Array, b: Uint8Array): boolean {

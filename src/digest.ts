@@ -31,3 +31,7 @@ export function transactionDigest(txDataBcs: Uint8Array): Uint8Array {
 export function transactionEffectsDigest(effectsBcs: Uint8Array): Uint8Array {
 	return suiDigest('TransactionEffects', effectsBcs);
 }
+
+export function transactionEventsDigest(eventsBcs: Uint8Array): Uint8Array {
+	return suiDigest('TransactionEvents', eventsBcs);
+}

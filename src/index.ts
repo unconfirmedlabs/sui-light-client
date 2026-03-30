@@ -1,9 +1,9 @@
-export { verifyCheckpoint, verifyCheckpointContents, verifyTransactionInCheckpoint, PreparedCommittee, digestsEqual } from './verify.js';
+export { verifyCheckpoint, verifyCheckpointContents, verifyTransactionInCheckpoint, verifyTransactionEffects, verifyTransactionEvents, verifyObjectInEffects, PreparedCommittee, digestsEqual } from './verify.js';
 export { parseBcsSummary } from './parse.js';
 export { verifyCommitteeTransition, walkCommitteeChain } from './committee.js';
-export { suiDigest, checkpointDigest, checkpointContentsDigest, transactionDigest, transactionEffectsDigest } from './digest.js';
+export { suiDigest, checkpointDigest, checkpointContentsDigest, transactionDigest, transactionEffectsDigest, transactionEventsDigest } from './digest.js';
 export { decodeRoaringBitmap } from './bitmap.js';
-export { bcsCheckpointSummary, bcsCheckpointContents, bcsAuthorityQuorumSignInfo } from './bcs.js';
+export { bcsCheckpointSummary, bcsCheckpointContents, bcsAuthorityQuorumSignInfo, bcsTransactionEffects } from './bcs.js';
 export type {
 	CheckpointSummary,
 	CheckpointContents,
